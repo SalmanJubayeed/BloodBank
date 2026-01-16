@@ -1,0 +1,174 @@
+-- Simplified Blood Bank Database
+-- Drop the existing database and create fresh one
+DROP DATABASE IF EXISTS blood_donation;
+CREATE DATABASE blood_donation;
+USE blood_donation;
+
+-- Users table (only donors and recipients, no admin)
+CREATE TABLE users (
+    user_id INT PRIMARY KEY AUTO_INCREMENT,
+    name VARCHAR(100) NOT NULL,
+    email VARCHAR(100) UNIQUE NOT NULL,
+    password VARCHAR(255) NOT NULL,
+    role ENUM('donor', 'recipient') NOT NULL,
+    age INT,
+    gender ENUM('Male', 'Female', 'Other'),
+    blood_group VARCHAR(5),
+    phone VARCHAR(15),
+    address TEXT,
+    is_active TINYINT(1) DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+-- Blood requests posted by recipients
+CREATE TABLE blood_requests (
+    request_id INT PRIMARY KEY AUTO_INCREMENT,
+    recipient_id INT NOT NULL,
+    blood_group VARCHAR(5) NOT NULL,
+    units_needed INT DEFAULT 1,
+    urgency_level ENUM('Low', 'Medium', 'High', 'Critical') DEFAULT 'Medium',
+    hospital_name VARCHAR(100),
+    contact_person VARCHAR(100),
+    contact_phone VARCHAR(15),
+    needed_by DATE,
+    additional_notes TEXT,
+    status ENUM('Open', 'Fulfilled', 'Cancelled') DEFAULT 'Open',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (recipient_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    INDEX idx_status_urgency (status, urgency_level),
+    INDEX idx_blood_group (blood_group),
+    INDEX idx_created_at (created_at)
+);
+
+-- Donation applications from donors to specific requests
+CREATE TABLE donation_applications (
+    application_id INT PRIMARY KEY AUTO_INCREMENT,
+    request_id INT NOT NULL,
+    donor_id INT NOT NULL,
+    message TEXT,
+    status ENUM('Pending', 'Approved', 'Rejected') DEFAULT 'Pending',
+    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    responded_at TIMESTAMP NULL,
+    FOREIGN KEY (request_id) REFERENCES blood_requests(request_id) ON DELETE CASCADE,
+    FOREIGN KEY (donor_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    UNIQUE KEY unique_application (request_id, donor_id),
+    INDEX idx_request_status (request_id, status),
+    INDEX idx_donor_status (donor_id, status)
+);
+
+-- Blood compatibility table for matching
+CREATE TABLE blood_compatibility (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    donor_type VARCHAR(5) NOT NULL,
+    recipient_type VARCHAR(5) NOT NULL,
+    compatible TINYINT(1) DEFAULT 0,
+    INDEX idx_donor_type (donor_type),
+    INDEX idx_recipient_type (recipient_type)
+);
+
+-- Insert blood compatibility data
+INSERT INTO blood_compatibility (donor_type, recipient_type, compatible) VALUES
+-- O- (Universal donor)
+('O-', 'O-', 1), ('O-', 'O+', 1), ('O-', 'A-', 1), ('O-', 'A+', 1),
+('O-', 'B-', 1), ('O-', 'B+', 1), ('O-', 'AB-', 1), ('O-', 'AB+', 1),
+-- O+
+('O+', 'O+', 1), ('O+', 'A+', 1), ('O+', 'B+', 1), ('O+', 'AB+', 1),
+-- A-
+('A-', 'A-', 1), ('A-', 'A+', 1), ('A-', 'AB-', 1), ('A-', 'AB+', 1),
+-- A+
+('A+', 'A+', 1), ('A+', 'AB+', 1),
+-- B-
+('B-', 'B-', 1), ('B-', 'B+', 1), ('B-', 'AB-', 1), ('B-', 'AB+', 1),
+-- B+
+('B+', 'B+', 1), ('B+', 'AB+', 1),
+-- AB-
+('AB-', 'AB-', 1), ('AB-', 'AB+', 1),
+-- AB+ (Universal recipient)
+('AB+', 'AB+', 1);
+
+-- View for active blood requests with recipient info
+CREATE VIEW active_requests AS
+SELECT 
+    br.request_id,
+    br.blood_group,
+    br.units_needed,
+    br.urgency_level,
+    br.hospital_name,
+    br.contact_person,
+    br.contact_phone,
+    br.needed_by,
+    br.additional_notes,
+    br.created_at,
+    u.name as recipient_name,
+    u.phone as recipient_phone,
+    u.email as recipient_email,
+    COUNT(da.application_id) as total_applications,
+    SUM(CASE WHEN da.status = 'Pending' THEN 1 ELSE 0 END) as pending_applications,
+    SUM(CASE WHEN da.status = 'Approved' THEN 1 ELSE 0 END) as approved_applications
+FROM blood_requests br
+JOIN users u ON br.recipient_id = u.user_id
+LEFT JOIN donation_applications da ON br.request_id = da.request_id
+WHERE br.status = 'Open'
+GROUP BY br.request_id
+ORDER BY 
+    CASE br.urgency_level 
+        WHEN 'Critical' THEN 1 
+        WHEN 'High' THEN 2 
+        WHEN 'Medium' THEN 3 
+        WHEN 'Low' THEN 4 
+    END,
+    br.needed_by ASC,
+    br.created_at DESC;
+
+-- View for compatible donors for any blood type
+CREATE VIEW compatible_donors AS
+SELECT DISTINCT 
+    bc.recipient_type,
+    u.user_id,
+    u.name,
+    u.email,
+    u.blood_group,
+    u.phone,
+    u.age,
+    u.gender,
+    u.created_at
+FROM users u
+JOIN blood_compatibility bc ON u.blood_group = bc.donor_type
+WHERE u.role = 'donor' AND u.is_active = 1 AND bc.compatible = 1;
+
+-- Insert some sample data for testing
+
+-- Sample users (passwords are all 'password123' hashed with PASSWORD_DEFAULT)
+INSERT INTO users (name, email, password, role, age, gender, blood_group, phone, address) VALUES
+('John Donor', 'john@example.com', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'donor', 28, 'Male', 'O+', '555-0101', '123 Main St, City, State'),
+('Sarah Helper', 'sarah@example.com', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'donor', 32, 'Female', 'A+', '555-0102', '456 Oak Ave, City, State'),
+('Mike Universal', 'mike@example.com', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'donor', 25, 'Male', 'O-', '555-0103', '789 Pine Rd, City, State'),
+('Lisa Patient', 'lisa@example.com', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'recipient', 45, 'Female', 'B+', '555-0201', '321 Elm St, City, State'),
+('David Recipient', 'david@example.com', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'recipient', 38, 'Male', 'AB-', '555-0202', '654 Birch Ln, City, State');
+
+-- Sample blood requests
+INSERT INTO blood_requests (recipient_id, blood_group, units_needed, urgency_level, hospital_name, contact_person, contact_phone, needed_by, additional_notes) VALUES
+(4, 'B+', 2, 'High', 'City General Hospital', 'Dr. Smith', '555-1001', DATE_ADD(CURDATE(), INTERVAL 3 DAY), 'Urgent surgery scheduled. Patient has rare complications.'),
+(5, 'AB-', 1, 'Critical', 'Memorial Medical Center', 'Dr. Johnson', '555-1002', DATE_ADD(CURDATE(), INTERVAL 1 DAY), 'Emergency case. Patient in ICU.');
+
+-- Sample donation applications
+INSERT INTO donation_applications (request_id, donor_id, message) VALUES
+(1, 1, 'I am available to donate immediately. I have donated before and am in good health.'),
+(1, 2, 'I can help! I live nearby and can come to the hospital today.'),
+(2, 3, 'As O- donor, I can help with this critical case. Please let me know the details.');
+
+-- Create indexes for better performance
+CREATE INDEX idx_users_role_active ON users(role, is_active);
+CREATE INDEX idx_users_blood_group ON users(blood_group);
+CREATE INDEX idx_requests_recipient_status ON blood_requests(recipient_id, status);
+CREATE INDEX idx_applications_donor_request ON donation_applications(donor_id, request_id);
+
+-- Display summary
+SELECT 'Database created successfully!' as Status;
+SELECT 'Sample Data Summary:' as Info;
+SELECT COUNT(*) as Total_Users FROM users;
+SELECT role, COUNT(*) as Count FROM users GROUP BY role;
+SELECT COUNT(*) as Active_Requests FROM blood_requests WHERE status = 'Open';
+SELECT COUNT(*) as Pending_Applications FROM donation_applications WHERE status = 'Pending';
